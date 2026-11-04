@@ -1,10 +1,14 @@
 import os
 import tempfile
+from typing import List
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from app.analysis import analyze_song
+from app.arranger import build_midi
 
 app = FastAPI(title="Cover Studio API")
 
@@ -40,7 +44,6 @@ async def analyze(file: UploadFile = File(...)):
     if len(content) > MAX_SIZE_MB * 1024 * 1024:
         raise HTTPException(400, f"File size {MAX_SIZE_MB}MB ට වඩා අඩු විය යුතුයි")
 
-    # Temporary file එකක් ලෙස save කරලා analyze කරනවා
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
@@ -50,6 +53,36 @@ async def analyze(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(500, f"Analysis අසාර්ථකයි: {e}")
     finally:
-        os.remove(tmp_path)  # මුල් file එක වහාම මකනවා
+        os.remove(tmp_path)
 
     return result
+
+
+class ChordItem(BaseModel):
+    start: float
+    end: float
+    chord: str
+
+
+class GenerateRequest(BaseModel):
+    tempo: float
+    chords: List[ChordItem]
+    instrument: str = "guitar"
+
+
+@app.post("/generate")
+def generate(req: GenerateRequest):
+    if req.instrument not in ("guitar", "piano"):
+        raise HTTPException(400, "instrument එක guitar හෝ piano විය යුතුයි")
+
+    try:
+        pm = build_midi(req.tempo, [c.model_dump() for c in req.chords], req.instrument)
+    except Exception as e:
+        raise HTTPException(500, f"Generate අසාර්ථකයි: {e}")
+
+    out_dir = os.path.join(tempfile.gettempdir(), "cover_studio")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"backing_{req.instrument}.mid")
+    pm.write(out_path)
+
+    return FileResponse(out_path, media_type="audio/midi", filename=f"backing_{req.instrument}.mid")
