@@ -23,7 +23,10 @@ function chordNotes(chord: string, octave: number): string[] {
 function makeSynth(instrument: Instrument): Tone.PolySynth {
     switch (instrument) {
         case "guitar":
-            return new Tone.PolySynth(Tone.PluckSynth as never);
+            return new Tone.PolySynth(Tone.Synth, {
+                oscillator: { type: "fmtriangle" },
+                envelope: { attack: 0.002, decay: 0.35, sustain: 0.05, release: 0.6 },
+            });
         case "piano":
             return new Tone.PolySynth(Tone.Synth, {
                 oscillator: { type: "triangle" },
