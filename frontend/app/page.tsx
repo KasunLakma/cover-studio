@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { play, stop, Instrument } from "@/lib/player";
+import { startRecording, stopRecording } from "@/lib/recorder";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -36,6 +37,9 @@ export default function Home() {
   const [instrument, setInstrument] = useState<Instrument>("guitar");
   const [playing, setPlaying] = useState(false);
   const [originalTempo, setOriginalTempo] = useState(120);
+  const [recording, setRecording] = useState(false);
+  const [vocalUrl, setVocalUrl] = useState<string | null>(null);
+  const [micError, setMicError] = useState("");
 
   async function handleAnalyze() {
     if (!file) return;
@@ -101,6 +105,28 @@ export default function Home() {
   function handleStop() {
     stop();
     setPlaying(false);
+  }
+  async function handleRecord() {
+    setMicError("");
+    try {
+      await startRecording();
+      setRecording(true);
+      // backing track එකත් එකවර ආරම්භ කරනවා
+      setPlaying(true);
+      await play(chords, tempo, instrument, () => setPlaying(false));
+    } catch {
+      setMicError("Microphone එකට ප්‍රවේශය ලබාගන්න බැහැ. Browser permission එක Allow කරන්න.");
+      setRecording(false);
+    }
+  }
+
+  async function handleStopRecord() {
+    stop();
+    setPlaying(false);
+    const blob = await stopRecording();
+    setRecording(false);
+    if (vocalUrl) URL.revokeObjectURL(vocalUrl);
+    setVocalUrl(URL.createObjectURL(blob));
   }
 
   return (
@@ -243,8 +269,8 @@ export default function Home() {
                     key={id}
                     onClick={() => setInstrument(id)}
                     className={`px-4 py-2 rounded-lg border ${instrument === id
-                        ? "bg-indigo-600 border-white"
-                        : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
+                      ? "bg-indigo-600 border-white"
+                      : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
                       }`}
                   >
                     {label}
@@ -269,6 +295,47 @@ export default function Home() {
                   </button>
                 )}
               </div>
+            </div>
+            {/* ---------- Record ---------- */}
+            <div className="mt-8 border-t border-neutral-700 pt-6">
+              <h2 className="text-xl font-semibold mb-2">4. Record</h2>
+              <p className="text-sm text-yellow-400 mb-4">
+                🎧 Headphones පළඳින්න! (නැත්නම් backing track එක mic එකට ඇතුල් වේ)
+              </p>
+
+              <div className="flex flex-wrap gap-3 mb-4">
+                {!recording ? (
+                  <button
+                    onClick={handleRecord}
+                    className="px-6 py-2 rounded-lg bg-red-600 hover:bg-red-500 font-medium"
+                  >
+                    🔴 Record
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStopRecord}
+                    className="px-6 py-2 rounded-lg bg-neutral-600 hover:bg-neutral-500 font-medium animate-pulse"
+                  >
+                    ⏹ Stop Recording
+                  </button>
+                )}
+              </div>
+
+              {micError && <p className="text-red-400 mb-3">⚠️ {micError}</p>}
+
+              {vocalUrl && (
+                <div>
+                  <p className="text-sm text-neutral-300 mb-2">ඔබේ record එක:</p>
+                  <audio controls src={vocalUrl} className="w-full" />
+                  <a
+                    href={vocalUrl}
+                    download="my-vocals.webm"
+                    className="inline-block mt-3 text-indigo-400 hover:text-indigo-300 underline"
+                  >
+                    ⬇ Vocals download කරන්න
+                  </a>
+                </div>
+              )}
             </div>
           </section>
         )}
