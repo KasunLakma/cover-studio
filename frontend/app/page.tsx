@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { play, stop, Instrument } from "@/lib/player";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -32,6 +33,9 @@ export default function Home() {
   const [tempo, setTempo] = useState(120);
   const [chords, setChords] = useState<Chord[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
+  const [instrument, setInstrument] = useState<Instrument>("guitar");
+  const [playing, setPlaying] = useState(false);
+  const [originalTempo, setOriginalTempo] = useState(120);
 
   async function handleAnalyze() {
     if (!file) return;
@@ -49,6 +53,7 @@ export default function Home() {
       }
       const data: Analysis = await res.json();
       setTempo(data.tempo);
+      setOriginalTempo(data.tempo);
       setKey(data.key);
       setDuration(data.duration);
       setChords(data.chords);
@@ -88,6 +93,15 @@ export default function Home() {
   }
 
   const hasChords = chords.length > 0;
+  async function handlePlay() {
+    setPlaying(true);
+    await play(chords, tempo, instrument, () => setPlaying(false));
+  }
+
+  function handleStop() {
+    stop();
+    setPlaying(false);
+  }
 
   return (
     <main className="min-h-screen bg-neutral-950 text-white p-8">
@@ -171,8 +185,8 @@ export default function Home() {
                   key={i}
                   onClick={() => setSelected(i)}
                   className={`rounded-lg px-3 py-2 text-center border transition ${selected === i
-                      ? "bg-indigo-500 border-white"
-                      : "bg-indigo-600/20 border-indigo-500 hover:bg-indigo-600/40"
+                    ? "bg-indigo-500 border-white"
+                    : "bg-indigo-600/20 border-indigo-500 hover:bg-indigo-600/40"
                     }`}
                 >
                   <div className="font-bold">{c.chord}</div>
@@ -212,6 +226,50 @@ export default function Home() {
                 </button>
               </div>
             )}
+            {/* ---------- Music ---------- */}
+            <div className="mt-8 border-t border-neutral-700 pt-6">
+              <h2 className="text-xl font-semibold mb-4">3. Music</h2>
+
+              <div className="flex flex-wrap gap-2 mb-4">
+                {(
+                  [
+                    ["guitar", "🎸 Guitar"],
+                    ["piano", "🎹 Piano"],
+                    ["flute", "🪈 Flute"],
+                    ["strings", "🎻 Strings"],
+                  ] as [Instrument, string][]
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    onClick={() => setInstrument(id)}
+                    className={`px-4 py-2 rounded-lg border ${instrument === id
+                        ? "bg-indigo-600 border-white"
+                        : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
+                      }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex gap-3">
+                {!playing ? (
+                  <button
+                    onClick={handlePlay}
+                    className="px-6 py-2 rounded-lg bg-green-600 hover:bg-green-500 font-medium"
+                  >
+                    ▶ Play
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStop}
+                    className="px-6 py-2 rounded-lg bg-red-600 hover:bg-red-500 font-medium"
+                  >
+                    ⏹ Stop
+                  </button>
+                )}
+              </div>
+            </div>
           </section>
         )}
       </div>
