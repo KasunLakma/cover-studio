@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { play, stop, Instrument } from "@/lib/player";
 import { startRecording, stopRecording } from "@/lib/recorder";
+import { mixAndExport } from "@/lib/mixer";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -26,20 +27,34 @@ function transposeChord(chord: string, steps: number) {
 }
 
 export default function Home() {
+  // ---------- Upload / Analysis ----------
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [key, setKey] = useState("");
   const [duration, setDuration] = useState(0);
   const [tempo, setTempo] = useState(120);
+  const [originalTempo, setOriginalTempo] = useState(120);
   const [chords, setChords] = useState<Chord[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
+
+  // ---------- Music ----------
   const [instrument, setInstrument] = useState<Instrument>("guitar");
   const [playing, setPlaying] = useState(false);
-  const [originalTempo, setOriginalTempo] = useState(120);
+
+  // ---------- Record ----------
   const [recording, setRecording] = useState(false);
   const [vocalUrl, setVocalUrl] = useState<string | null>(null);
+  const [vocalBlob, setVocalBlob] = useState<Blob | null>(null);
   const [micError, setMicError] = useState("");
+
+  // ---------- Mix ----------
+  const [vocalVolume, setVocalVolume] = useState(1);
+  const [musicVolume, setMusicVolume] = useState(-8);
+  const [offsetMs, setOffsetMs] = useState(0);
+  const [mixing, setMixing] = useState(false);
+  const [mixUrl, setMixUrl] = useState<string | null>(null);
+  const [mixError, setMixError] = useState("");
 
   async function handleAnalyze() {
     if (!file) return;
@@ -83,8 +98,7 @@ export default function Home() {
     const mid = (base.start + base.end) / 2;
     const first = { ...base, end: mid };
     const second = { start: mid, end: base.end, chord: base.chord };
-    const next = [...chords.slice(0, i), first, second, ...chords.slice(i + 1)];
-    setChords(next);
+    setChords([...chords.slice(0, i), first, second, ...chords.slice(i + 1)]);
     setSelected(i + 1);
   }
 
@@ -96,7 +110,7 @@ export default function Home() {
     }
   }
 
-  const hasChords = chords.length > 0;
+  // ---------- Play ----------
   async function handlePlay() {
     setPlaying(true);
     await play(chords, tempo, instrument, () => setPlaying(false));
@@ -106,17 +120,19 @@ export default function Home() {
     stop();
     setPlaying(false);
   }
+
+  // ---------- Record ----------
   async function handleRecord() {
     setMicError("");
     try {
       await startRecording();
       setRecording(true);
-      // backing track එකත් එකවර ආරම්භ කරනවා
       setPlaying(true);
       await play(chords, tempo, instrument, () => setPlaying(false));
     } catch {
       setMicError("Microphone එකට ප්‍රවේශය ලබාගන්න බැහැ. Browser permission එක Allow කරන්න.");
       setRecording(false);
+      setPlaying(false);
     }
   }
 
@@ -125,16 +141,44 @@ export default function Home() {
     setPlaying(false);
     const blob = await stopRecording();
     setRecording(false);
+    setVocalBlob(blob);
     if (vocalUrl) URL.revokeObjectURL(vocalUrl);
     setVocalUrl(URL.createObjectURL(blob));
   }
+
+  // ---------- Mix ----------
+  async function handleMix() {
+    if (!vocalBlob) return;
+    setMixing(true);
+    setMixError("");
+    try {
+      const out = await mixAndExport({
+        chords,
+        tempo,
+        originalTempo,
+        instrument,
+        vocalBlob,
+        vocalVolume,
+        musicVolume,
+        vocalOffsetMs: offsetMs,
+      });
+      if (mixUrl) URL.revokeObjectURL(mixUrl);
+      setMixUrl(URL.createObjectURL(out));
+    } catch (e) {
+      setMixError(e instanceof Error ? e.message : "Mix අසාර්ථකයි");
+    } finally {
+      setMixing(false);
+    }
+  }
+
+  const hasChords = chords.length > 0;
 
   return (
     <main className="min-h-screen bg-neutral-950 text-white p-8">
       <div className="max-w-3xl mx-auto">
         <h1 className="text-3xl font-bold mb-2">🎵 Cover Song Studio</h1>
         <p className="text-neutral-400 mb-8">
-          සිංදුවක් upload කරන්න, chords නිවැරදි කරන්න.
+          සිංදුවක් upload කරන්න, chords නිවැරදි කරන්න, ගායනා කරන්න.
         </p>
 
         {/* ---------- 1. Upload ---------- */}
@@ -156,12 +200,11 @@ export default function Home() {
           {error && <p className="mt-4 text-red-400">⚠️ {error}</p>}
         </section>
 
-        {/* ---------- 2. Chord Editor ---------- */}
         {hasChords && (
           <section className="bg-neutral-900 rounded-xl p-6">
+            {/* ---------- 2. Chord Editor ---------- */}
             <h2 className="text-xl font-semibold mb-4">2. Chord Editor</h2>
 
-            {/* Tempo / Key / Transpose */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
               <div className="bg-neutral-800 rounded-lg p-4">
                 <div className="text-neutral-400 text-sm mb-2">Tempo: {tempo} BPM</div>
@@ -200,19 +243,19 @@ export default function Home() {
             </div>
 
             <p className="text-sm text-neutral-400 mb-3">
-              Chord එකක් click කරලා edit කරන්න. ({chords.length} chords, {Math.floor(duration / 60)}:
+              Chord එකක් click කරලා edit කරන්න. ({chords.length} chords,{" "}
+              {Math.floor(duration / 60)}:
               {String(Math.round(duration % 60)).padStart(2, "0")})
             </p>
 
-            {/* Chord grid */}
             <div className="flex flex-wrap gap-2 mb-6">
               {chords.map((c, i) => (
                 <button
                   key={i}
                   onClick={() => setSelected(i)}
                   className={`rounded-lg px-3 py-2 text-center border transition ${selected === i
-                    ? "bg-indigo-500 border-white"
-                    : "bg-indigo-600/20 border-indigo-500 hover:bg-indigo-600/40"
+                      ? "bg-indigo-500 border-white"
+                      : "bg-indigo-600/20 border-indigo-500 hover:bg-indigo-600/40"
                     }`}
                 >
                   <div className="font-bold">{c.chord}</div>
@@ -221,12 +264,9 @@ export default function Home() {
               ))}
             </div>
 
-            {/* Selected chord panel */}
             {selected !== null && chords[selected] && (
               <div className="bg-neutral-800 rounded-lg p-4 flex flex-wrap items-center gap-3">
-                <span className="text-neutral-300">
-                  තෝරාගත් chord (#{selected + 1}):
-                </span>
+                <span className="text-neutral-300">තෝරාගත් chord (#{selected + 1}):</span>
                 <select
                   value={chords[selected].chord}
                   onChange={(e) => changeChord(selected, e.target.value)}
@@ -252,7 +292,8 @@ export default function Home() {
                 </button>
               </div>
             )}
-            {/* ---------- Music ---------- */}
+
+            {/* ---------- 3. Music ---------- */}
             <div className="mt-8 border-t border-neutral-700 pt-6">
               <h2 className="text-xl font-semibold mb-4">3. Music</h2>
 
@@ -269,8 +310,8 @@ export default function Home() {
                     key={id}
                     onClick={() => setInstrument(id)}
                     className={`px-4 py-2 rounded-lg border ${instrument === id
-                      ? "bg-indigo-600 border-white"
-                      : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
+                        ? "bg-indigo-600 border-white"
+                        : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
                       }`}
                   >
                     {label}
@@ -296,7 +337,8 @@ export default function Home() {
                 )}
               </div>
             </div>
-            {/* ---------- Record ---------- */}
+
+            {/* ---------- 4. Record ---------- */}
             <div className="mt-8 border-t border-neutral-700 pt-6">
               <h2 className="text-xl font-semibold mb-2">4. Record</h2>
               <p className="text-sm text-yellow-400 mb-4">
@@ -337,6 +379,82 @@ export default function Home() {
                 </div>
               )}
             </div>
+
+            {/* ---------- 5. Mix & Export ---------- */}
+            {vocalBlob && (
+              <div className="mt-8 border-t border-neutral-700 pt-6">
+                <h2 className="text-xl font-semibold mb-4">5. Mix & Export</h2>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                  <div className="bg-neutral-800 rounded-lg p-4">
+                    <div className="text-sm text-neutral-400 mb-2">
+                      🎤 Vocal volume: {vocalVolume.toFixed(1)}
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={2}
+                      step={0.1}
+                      value={vocalVolume}
+                      onChange={(e) => setVocalVolume(Number(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  <div className="bg-neutral-800 rounded-lg p-4">
+                    <div className="text-sm text-neutral-400 mb-2">
+                      🎸 Music volume: {musicVolume} dB
+                    </div>
+                    <input
+                      type="range"
+                      min={-24}
+                      max={0}
+                      step={1}
+                      value={musicVolume}
+                      onChange={(e) => setMusicVolume(Number(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  <div className="bg-neutral-800 rounded-lg p-4">
+                    <div className="text-sm text-neutral-400 mb-2">
+                      ⏲ Vocal sync: {offsetMs} ms
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={500}
+                      step={10}
+                      value={offsetMs}
+                      onChange={(e) => setOffsetMs(Number(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleMix}
+                  disabled={mixing}
+                  className="px-6 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-700 font-medium"
+                >
+                  {mixing ? "Mix කරමින්..." : "🎚 Mix කරන්න"}
+                </button>
+
+                {mixError && <p className="mt-3 text-red-400">⚠️ {mixError}</p>}
+
+                {mixUrl && (
+                  <div className="mt-4">
+                    <p className="text-sm text-neutral-300 mb-2">අවසන් cover එක:</p>
+                    <audio controls src={mixUrl} className="w-full" />
+                    <a
+                      href={mixUrl}
+                      download="my-cover.wav"
+                      className="inline-block mt-3 px-5 py-2 rounded-lg bg-green-600 hover:bg-green-500 font-medium"
+                    >
+                      ⬇ Download (WAV)
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         )}
       </div>
