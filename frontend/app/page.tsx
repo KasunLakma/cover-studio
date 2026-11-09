@@ -41,6 +41,8 @@ export default function Home() {
   // ---------- Music ----------
   const [instrument, setInstrument] = useState<Instrument>("guitar");
   const [playing, setPlaying] = useState(false);
+  const [startIdx, setStartIdx] = useState(0);
+  const [endIdx, setEndIdx] = useState(0);
 
   // ---------- Record ----------
   const [recording, setRecording] = useState(false);
@@ -76,6 +78,8 @@ export default function Home() {
       setKey(data.key);
       setDuration(data.duration);
       setChords(data.chords);
+      setStartIdx(0);
+      setEndIdx(data.chords.length - 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : "නොදන්නා දෝෂයක්");
     } finally {
@@ -110,6 +114,12 @@ export default function Home() {
     }
   }
 
+  // තෝරාගත් කොටසේ chords පමණක්
+  function selectedChords() {
+    const s = Math.min(startIdx, endIdx);
+    const e = Math.max(startIdx, endIdx);
+    return chords.slice(s, e + 1);
+  }
   // ---------- Play ----------
   async function handlePlay() {
     setPlaying(true);
@@ -128,7 +138,7 @@ export default function Home() {
       await startRecording();
       setRecording(true);
       setPlaying(true);
-      await play(chords, tempo, instrument, () => setPlaying(false));
+      await play(chords, tempo, instrument, () => setPlaying(false), originalTempo);
     } catch {
       setMicError("Microphone එකට ප්‍රවේශය ලබාගන්න බැහැ. Browser permission එක Allow කරන්න.");
       setRecording(false);
@@ -254,8 +264,8 @@ export default function Home() {
                   key={i}
                   onClick={() => setSelected(i)}
                   className={`rounded-lg px-3 py-2 text-center border transition ${selected === i
-                      ? "bg-indigo-500 border-white"
-                      : "bg-indigo-600/20 border-indigo-500 hover:bg-indigo-600/40"
+                    ? "bg-indigo-500 border-white"
+                    : "bg-indigo-600/20 border-indigo-500 hover:bg-indigo-600/40"
                     }`}
                 >
                   <div className="font-bold">{c.chord}</div>
@@ -310,8 +320,8 @@ export default function Home() {
                     key={id}
                     onClick={() => setInstrument(id)}
                     className={`px-4 py-2 rounded-lg border ${instrument === id
-                        ? "bg-indigo-600 border-white"
-                        : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
+                      ? "bg-indigo-600 border-white"
+                      : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
                       }`}
                   >
                     {label}

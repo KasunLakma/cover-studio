@@ -31,8 +31,57 @@ def _detect_key(chroma):
     return best
 
 
+def _chord_root_midi(name: str) -> int:
+    """'Dm' -> MIDI number of the root note in octave 2 (bass range)"""
+    root = name[:2] if len(name) > 1 and name[1] == '#' else name[0]
+    return 36 + NOTES.index(root)  # C2 = 36
+
+
+def _extract_melody(y, sr, key_root: int):
+    """ගායනයේ / ප්‍රධාන තනුවේ notes හඳුනාගැනීම (pyin)"""
+    hop = 512
+    f0, voiced, _ = librosa.pyin(
+        y,
+        fmin=librosa.note_to_hz('C3'),
+        fmax=librosa.note_to_hz('C6'),
+        sr=sr,
+        hop_length=hop,
+    )
+    times = librosa.times_like(f0, sr=sr, hop_length=hop)
+
+    midi = np.full(len(f0), np.nan)
+    ok = voiced & ~np.isnan(f0)
+    midi[ok] = np.round(librosa.hz_to_midi(f0[ok]))
+
+    notes = []
+    cur_pitch, cur_start, last_t = None, 0.0, 0.0
+    for t, m in zip(times, midi):
+        if np.isnan(m):
+            if cur_pitch is not None:
+                notes.append((cur_start, last_t, cur_pitch))
+                cur_pitch = None
+            continue
+        m = int(m)
+        if cur_pitch is None:
+            cur_pitch, cur_start = m, t
+        elif m != cur_pitch:
+            notes.append((cur_start, last_t, cur_pitch))
+            cur_pitch, cur_start = m, t
+        last_t = t
+    if cur_pitch is not None:
+        notes.append((cur_start, last_t, cur_pitch))
+
+    # ඉතා කෙටි notes (<0.1s) ඉවත් කරනවා (noise)
+    result = [
+        {"start": round(float(s), 2), "end": round(float(e) + 0.05, 2), "pitch": int(p)}
+        for s, e, p in notes
+        if e - s >= 0.1
+    ]
+    return result
+
+
 def analyze_song(path: str) -> dict:
-    # 1. Audio load කිරීම (mono, 22kHz)
+    # 1. Audio load (mono, 22kHz)
     y, sr = librosa.load(path, sr=22050, mono=True)
     duration = float(len(y) / sr)
 
@@ -41,30 +90,32 @@ def analyze_song(path: str) -> dict:
     tempo = float(np.atleast_1d(tempo)[0])
     beat_times = librosa.frames_to_time(beat_frames, sr=sr)
 
-    # 3. Chroma (harmonic කොටස පමණක්)
-    y_harm = librosa.effects.harmonic(y)
+    # 3. Harmonic / Percussive වෙන් කිරීම
+    y_harm, y_perc = librosa.effects.hpss(y)
+
+    # 4. Chroma
     chroma = librosa.feature.chroma_cqt(y=y_harm, sr=sr)
 
-    # 4. Key
+    # 5. Key
     key = _detect_key(chroma)
 
-    # 5. Beat එකකට chroma එකක් (beat-synchronous)
+    # 6. Beat-synchronous chroma
     chroma_sync = librosa.util.sync(chroma, beat_frames, aggregate=np.median)
 
-    # 6. Chord template matching
+    # 7. Chord template matching
     templates, names = _chord_templates()
     sim = templates @ chroma_sync
     sim = sim / (np.linalg.norm(templates, axis=1)[:, None] *
                  (np.linalg.norm(chroma_sync, axis=0)[None, :] + 1e-9))
 
-    # 7. Viterbi smoothing (chords නිතර වෙනස් වීම අඩු කරයි)
+    # 8. Viterbi smoothing
     probs = np.exp(sim * 8)
     probs = probs / probs.sum(axis=0)
     transition = np.full((24, 24), 0.2 / 23)
     np.fill_diagonal(transition, 0.8)
     best_path = librosa.sequence.viterbi_discriminative(probs, transition)
 
-    # 8. Chords list එක හදන්න (එකම chord එකට එක් කරනවා)
+    # 9. Chords list
     bounds = np.concatenate([[0.0], beat_times, [duration]])
     chords = []
     for i, idx in enumerate(best_path):
@@ -76,9 +127,29 @@ def analyze_song(path: str) -> dict:
         else:
             chords.append({"start": round(start, 2), "end": round(end, 2), "chord": name})
 
+    # 10. Bass: chord එකේ root note එක, chord එක පුරාම
+    bass = [
+        {
+            "start": c["start"],
+            "end": c["end"],
+            "pitch": _chord_root_midi(c["chord"]),
+        }
+        for c in chords
+    ]
+
+    # 11. Melody (තනුව)
+    key_root = NOTES.index(key.split()[0])
+    melody = _extract_melody(y, sr, key_root)
+
+    # 12. Drums: දැනට සරල pop pattern එකක් (tempo අනුව frontend එක හදනවා)
+    drums = {"pattern": "pop"}
+
     return {
         "tempo": round(tempo, 1),
         "key": key,
         "duration": round(duration, 1),
         "chords": chords,
+        "bass": bass,
+        "melody": melody,
+        "drums": drums,
     }

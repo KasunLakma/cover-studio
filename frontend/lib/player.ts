@@ -64,7 +64,8 @@ export async function play(
     chords: ChordItem[],
     tempo: number,
     instrument: Instrument,
-    onEnd: () => void
+    onEnd: () => void,
+    originalTempo: number = 136
 ) {
     await Tone.start();
     stop();
@@ -77,7 +78,7 @@ export async function play(
     const beat = 60 / tempo;
     // මුල් සිංදුවේ කාලය අනුව නෙවෙයි, tempo අනුව beats 4ක් බැගින් chord එකක් වාදනය කරනවා
     const base = chords[0]?.start ?? 0;
-    const originalTempo = 136;
+
 
     chords.forEach((c) => {
         const at = ((c.start - base) * originalTempo) / tempo;
