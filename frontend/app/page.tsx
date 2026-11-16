@@ -1,134 +1,107 @@
 "use client";
 
-import { useState } from "react";
-import { play, stop, Instrument } from "@/lib/player";
+import { useEffect, useState } from "react";
+import {
+  DRUM_PRESETS,
+  DRUM_STEPS,
+  INSTRUMENTS,
+  MELODY_ROWS,
+  NOTES,
+  PROGRESSIONS,
+  STEPS,
+  STYLES,
+  applyProgression,
+  chordLabel,
+  defaultProject,
+  getPlayhead,
+  melodyMidi,
+  mixExport,
+  previewNote,
+  randomMelody,
+  resizeProject,
+  rowLabel,
+  startEngine,
+  stopEngine,
+  updateProject,
+  type Drums,
+  type Project,
+  type TrackId,
+  type TrackSettings,
+} from "@/lib/engine";
 import { startRecording, stopRecording } from "@/lib/recorder";
-import { mixAndExport } from "@/lib/mixer";
 
-const API_URL = "http://127.0.0.1:8000";
-
-const NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const ALL_CHORDS = NOTES.flatMap((n) => [n, n + "m"]);
-
-type Chord = { start: number; end: number; chord: string };
-type Analysis = {
-  tempo: number;
-  key: string;
-  duration: number;
-  chords: Chord[];
+const TRACK_INFO: Record<TrackId, { icon: string; name: string; color: string }> = {
+  melody: { icon: "🎤", name: "තනුව", color: "border-pink-500 bg-pink-500/10" },
+  chords: { icon: "🎼", name: "Chords", color: "border-indigo-500 bg-indigo-500/10" },
+  bass: { icon: "🎸", name: "Bass", color: "border-emerald-500 bg-emerald-500/10" },
+  drums: { icon: "🥁", name: "Drums", color: "border-orange-500 bg-orange-500/10" },
 };
 
-function transposeChord(chord: string, steps: number) {
-  const root = chord.length > 1 && chord[1] === "#" ? chord.slice(0, 2) : chord[0];
-  const quality = chord.slice(root.length);
-  const idx = NOTES.indexOf(root);
-  if (idx === -1) return chord;
-  return NOTES[(((idx + steps) % 12) + 12) % 12] + quality;
-}
-
 export default function Home() {
-  // ---------- Upload / Analysis ----------
-  const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [key, setKey] = useState("");
-  const [duration, setDuration] = useState(0);
-  const [tempo, setTempo] = useState(120);
-  const [originalTempo, setOriginalTempo] = useState(120);
-  const [chords, setChords] = useState<Chord[]>([]);
-  const [selected, setSelected] = useState<number | null>(null);
-
-  // ---------- Music ----------
-  const [instrument, setInstrument] = useState<Instrument>("guitar");
+  const [p, setP] = useState<Project>(defaultProject());
   const [playing, setPlaying] = useState(false);
-  const [startIdx, setStartIdx] = useState(0);
-  const [endIdx, setEndIdx] = useState(0);
+  const [head, setHead] = useState<number | null>(null);
 
-  // ---------- Record ----------
   const [recording, setRecording] = useState(false);
+  const [micError, setMicError] = useState("");
   const [vocalUrl, setVocalUrl] = useState<string | null>(null);
   const [vocalBlob, setVocalBlob] = useState<Blob | null>(null);
-  const [micError, setMicError] = useState("");
-
-  // ---------- Mix ----------
-  const [vocalVolume, setVocalVolume] = useState(1);
-  const [musicVolume, setMusicVolume] = useState(-8);
-  const [offsetMs, setOffsetMs] = useState(0);
+  const [vocalVol, setVocalVol] = useState(1);
+  const [trimMs, setTrimMs] = useState(0);
   const [mixing, setMixing] = useState(false);
   const [mixUrl, setMixUrl] = useState<string | null>(null);
   const [mixError, setMixError] = useState("");
 
-  async function handleAnalyze() {
-    if (!file) return;
-    setLoading(true);
-    setError("");
-    setSelected(null);
+  // ---------- helpers ----------
+  const set = (patch: Partial<Project>) => setP((prev) => ({ ...prev, ...patch }));
+  const setTrack = (id: TrackId, patch: Partial<TrackSettings>) =>
+    setP((prev) => ({ ...prev, tracks: { ...prev.tracks, [id]: { ...prev.tracks[id], ...patch } } }));
 
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch(`${API_URL}/analyze`, { method: "POST", body: form });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Analysis අසාර්ථකයි");
-      }
-      const data: Analysis = await res.json();
-      setTempo(data.tempo);
-      setOriginalTempo(data.tempo);
-      setKey(data.key);
-      setDuration(data.duration);
-      setChords(data.chords);
-      setStartIdx(0);
-      setEndIdx(data.chords.length - 1);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "නොදන්නා දෝෂයක්");
-    } finally {
-      setLoading(false);
+  // Play වෙද්දී වෙනස්කම් engine එකට යවනවා
+  useEffect(() => {
+    if (playing) updateProject(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p]);
+
+  // Playhead
+  useEffect(() => {
+    if (!playing) {
+      setHead(null);
+      return;
     }
-  }
+    const id = setInterval(() => setHead(getPlayhead()), 60);
+    return () => clearInterval(id);
+  }, [playing]);
 
-  // ---------- Chord editing ----------
-  function changeChord(i: number, newChord: string) {
-    setChords(chords.map((c, idx) => (idx === i ? { ...c, chord: newChord } : c)));
-  }
+  useEffect(() => () => stopEngine(), []);
 
-  function deleteChord(i: number) {
-    setChords(chords.filter((_, idx) => idx !== i));
-    setSelected(null);
-  }
-
-  function addChordAfter(i: number) {
-    const base = chords[i];
-    const mid = (base.start + base.end) / 2;
-    const first = { ...base, end: mid };
-    const second = { start: mid, end: base.end, chord: base.chord };
-    setChords([...chords.slice(0, i), first, second, ...chords.slice(i + 1)]);
-    setSelected(i + 1);
-  }
-
-  function transposeAll(steps: number) {
-    setChords(chords.map((c) => ({ ...c, chord: transposeChord(c.chord, steps) })));
-    if (key) {
-      const [root, mode] = key.split(" ");
-      setKey(`${transposeChord(root, steps)} ${mode}`);
-    }
-  }
-
-  // තෝරාගත් කොටසේ chords පමණක්
-  function selectedChords() {
-    const s = Math.min(startIdx, endIdx);
-    const e = Math.max(startIdx, endIdx);
-    return chords.slice(s, e + 1);
-  }
   // ---------- Play ----------
   async function handlePlay() {
+    await startEngine(p);
     setPlaying(true);
-    await play(chords, tempo, instrument, () => setPlaying(false));
+  }
+  function handleStop() {
+    stopEngine();
+    setPlaying(false);
   }
 
-  function handleStop() {
-    stop();
-    setPlaying(false);
+  // ---------- Melody ----------
+  function clickCell(col: number, row: number) {
+    const m = [...p.melody];
+    if (m[col] === row) {
+      m[col] = -1;
+    } else {
+      m[col] = row;
+      previewNote(melodyMidi(p, row), p.tracks.melody.instrument);
+    }
+    set({ melody: m });
+  }
+
+  // ---------- Drums ----------
+  function toggleDrum(row: keyof Drums, step: number) {
+    const arr = [...p.drums[row]];
+    arr[step] = !arr[step];
+    set({ drums: { ...p.drums, [row]: arr } });
   }
 
   // ---------- Record ----------
@@ -137,23 +110,20 @@ export default function Home() {
     try {
       await startRecording();
       setRecording(true);
-      setPlaying(true);
-      await play(chords, tempo, instrument, () => setPlaying(false), originalTempo);
+      await handlePlay();
     } catch {
       setMicError("Microphone එකට ප්‍රවේශය ලබාගන්න බැහැ. Browser permission එක Allow කරන්න.");
       setRecording(false);
-      setPlaying(false);
     }
   }
-
   async function handleStopRecord() {
-    stop();
-    setPlaying(false);
+    handleStop();
     const blob = await stopRecording();
     setRecording(false);
     setVocalBlob(blob);
     if (vocalUrl) URL.revokeObjectURL(vocalUrl);
     setVocalUrl(URL.createObjectURL(blob));
+    setMixUrl(null);
   }
 
   // ---------- Mix ----------
@@ -162,16 +132,7 @@ export default function Home() {
     setMixing(true);
     setMixError("");
     try {
-      const out = await mixAndExport({
-        chords,
-        tempo,
-        originalTempo,
-        instrument,
-        vocalBlob,
-        vocalVolume,
-        musicVolume,
-        vocalOffsetMs: offsetMs,
-      });
+      const out = await mixExport(p, vocalBlob, vocalVol, trimMs);
       if (mixUrl) URL.revokeObjectURL(mixUrl);
       setMixUrl(URL.createObjectURL(out));
     } catch (e) {
@@ -181,288 +142,422 @@ export default function Home() {
     }
   }
 
-  const hasChords = chords.length > 0;
+  const totalCols = p.bars * STEPS;
+  const headCol = head === null ? -1 : Math.floor(head * totalCols);
+  const headBar = head === null ? -1 : Math.floor(head * p.bars);
+  const headDrum = head === null ? -1 : Math.floor(((head * p.bars) % 1) * DRUM_STEPS);
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-white p-8">
-      <div className="max-w-3xl mx-auto">
-        <h1 className="text-3xl font-bold mb-2">🎵 Cover Song Studio</h1>
-        <p className="text-neutral-400 mb-8">
-          සිංදුවක් upload කරන්න, chords නිවැරදි කරන්න, ගායනා කරන්න.
-        </p>
+    <main className="min-h-screen bg-neutral-950 text-white p-4 sm:p-8">
+      <div className="max-w-5xl mx-auto space-y-5">
+        <header>
+          <h1 className="text-3xl font-bold">🎵 Cover Song Studio</h1>
+          <p className="text-neutral-400">
+            බොත්තම් වලින් ඔබේම music එක හදන්න. කනට ඇහෙන දේ අනුව තෝරන්න.
+          </p>
+        </header>
 
-        {/* ---------- 1. Upload ---------- */}
-        <section className="bg-neutral-900 rounded-xl p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4">1. Upload</h2>
-          <input
-            type="file"
-            accept=".mp3,.wav,audio/*"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            className="block w-full text-sm mb-4 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 file:cursor-pointer"
-          />
-          <button
-            onClick={handleAnalyze}
-            disabled={!file || loading}
-            className="px-6 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-700 disabled:cursor-not-allowed font-medium"
-          >
-            {loading ? "විශ්ලේෂණය කරමින්... (තත්පර 20-60)" : "🔍 Analyze"}
-          </button>
-          {error && <p className="mt-4 text-red-400">⚠️ {error}</p>}
+        {/* ================= PLAY BAR ================= */}
+        <section className="bg-neutral-900 rounded-xl p-5 sticky top-0 z-20 border border-neutral-800">
+          <div className="flex flex-wrap items-center gap-4">
+            {!playing ? (
+              <button onClick={handlePlay} className="w-14 h-14 rounded-full bg-orange-600 hover:bg-orange-500 text-2xl">
+                ▶
+              </button>
+            ) : (
+              <button onClick={handleStop} className="w-14 h-14 rounded-full bg-red-600 hover:bg-red-500 text-2xl">
+                ⏹
+              </button>
+            )}
+
+            <div className="flex-1 min-w-[160px]">
+              <div className="h-2 bg-neutral-700 rounded-full overflow-hidden">
+                <div className="h-full bg-orange-500" style={{ width: `${(head ?? 0) * 100}%` }} />
+              </div>
+              <div className="text-xs text-neutral-400 mt-1">
+                {playing ? "වාදනය වෙමින් (නැවත නැවත)... වෙනස්කම් ක්ෂණිකව ඇහෙනවා" : "▶ ඔබලා ඇහෙන්න"}
+              </div>
+            </div>
+
+            <div className="text-right">
+              <div className="text-xs text-neutral-400">Key</div>
+              <div className="text-xl font-bold">
+                {NOTES[p.keyRoot]} {p.mode === "major" ? "Major" : "Minor"}
+              </div>
+            </div>
+          </div>
         </section>
 
-        {hasChords && (
-          <section className="bg-neutral-900 rounded-xl p-6">
-            {/* ---------- 2. Chord Editor ---------- */}
-            <h2 className="text-xl font-semibold mb-4">2. Chord Editor</h2>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-              <div className="bg-neutral-800 rounded-lg p-4">
-                <div className="text-neutral-400 text-sm mb-2">Tempo: {tempo} BPM</div>
-                <input
-                  type="range"
-                  min={60}
-                  max={200}
-                  value={tempo}
-                  onChange={(e) => setTempo(Number(e.target.value))}
-                  className="w-full"
-                />
-              </div>
-
-              <div className="bg-neutral-800 rounded-lg p-4 text-center">
-                <div className="text-neutral-400 text-sm">Key</div>
-                <div className="text-2xl font-bold">{key}</div>
-              </div>
-
-              <div className="bg-neutral-800 rounded-lg p-4 text-center">
-                <div className="text-neutral-400 text-sm mb-2">Transpose</div>
-                <div className="flex justify-center gap-3">
-                  <button
-                    onClick={() => transposeAll(-1)}
-                    className="w-10 h-10 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xl font-bold"
-                  >
-                    −
-                  </button>
-                  <button
-                    onClick={() => transposeAll(1)}
-                    className="w-10 h-10 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xl font-bold"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <p className="text-sm text-neutral-400 mb-3">
-              Chord එකක් click කරලා edit කරන්න. ({chords.length} chords,{" "}
-              {Math.floor(duration / 60)}:
-              {String(Math.round(duration % 60)).padStart(2, "0")})
-            </p>
-
-            <div className="flex flex-wrap gap-2 mb-6">
-              {chords.map((c, i) => (
-                <button
-                  key={i}
-                  onClick={() => setSelected(i)}
-                  className={`rounded-lg px-3 py-2 text-center border transition ${selected === i
-                    ? "bg-indigo-500 border-white"
-                    : "bg-indigo-600/20 border-indigo-500 hover:bg-indigo-600/40"
-                    }`}
-                >
-                  <div className="font-bold">{c.chord}</div>
-                  <div className="text-xs text-neutral-300">{c.start.toFixed(1)}s</div>
-                </button>
-              ))}
-            </div>
-
-            {selected !== null && chords[selected] && (
-              <div className="bg-neutral-800 rounded-lg p-4 flex flex-wrap items-center gap-3">
-                <span className="text-neutral-300">තෝරාගත් chord (#{selected + 1}):</span>
+        {/* ================= 1. SETTINGS ================= */}
+        <section className="bg-neutral-900 rounded-xl p-5">
+          <h2 className="text-lg font-semibold mb-4">1. මූලික සැකසුම්</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Key */}
+            <div>
+              <div className="text-sm text-neutral-400 mb-1">ස්වරය (Key)</div>
+              <div className="flex gap-2">
                 <select
-                  value={chords[selected].chord}
-                  onChange={(e) => changeChord(selected, e.target.value)}
-                  className="bg-neutral-700 rounded-lg px-3 py-2"
+                  value={p.keyRoot}
+                  onChange={(e) => set({ keyRoot: Number(e.target.value) })}
+                  className="bg-neutral-800 rounded-lg px-3 py-2 flex-1"
                 >
-                  {ALL_CHORDS.map((ch) => (
-                    <option key={ch} value={ch}>
-                      {ch}
+                  {NOTES.map((n, i) => (
+                    <option key={n} value={i}>
+                      {n}
                     </option>
                   ))}
                 </select>
-                <button
-                  onClick={() => addChordAfter(selected)}
-                  className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-500"
-                >
-                  ➕ Add
+                <button onClick={() => set({ keyRoot: (p.keyRoot + 11) % 12 })} className="px-3 rounded-lg bg-neutral-800 hover:bg-neutral-700">
+                  🔽
                 </button>
-                <button
-                  onClick={() => deleteChord(selected)}
-                  className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500"
-                >
-                  🗑 Delete
+                <button onClick={() => set({ keyRoot: (p.keyRoot + 1) % 12 })} className="px-3 rounded-lg bg-neutral-800 hover:bg-neutral-700">
+                  🔼
                 </button>
               </div>
-            )}
+            </div>
 
-            {/* ---------- 3. Music ---------- */}
-            <div className="mt-8 border-t border-neutral-700 pt-6">
-              <h2 className="text-xl font-semibold mb-4">3. Music</h2>
-
-              <div className="flex flex-wrap gap-2 mb-4">
+            {/* Mode */}
+            <div>
+              <div className="text-sm text-neutral-400 mb-1">හැඟීම</div>
+              <div className="flex gap-2">
                 {(
                   [
-                    ["guitar", "🎸 Guitar"],
-                    ["piano", "🎹 Piano"],
-                    ["flute", "🪈 Flute"],
-                    ["strings", "🎻 Strings"],
-                  ] as [Instrument, string][]
-                ).map(([id, label]) => (
+                    ["major", "😊 සතුටු"],
+                    ["minor", "😢 දුක්බර"],
+                  ] as const
+                ).map(([m, label]) => (
                   <button
-                    key={id}
-                    onClick={() => setInstrument(id)}
-                    className={`px-4 py-2 rounded-lg border ${instrument === id
-                      ? "bg-indigo-600 border-white"
-                      : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
+                    key={m}
+                    onClick={() => set({ mode: m })}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm ${p.mode === m ? "bg-indigo-600 border-white" : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
                       }`}
                   >
                     {label}
                   </button>
                 ))}
               </div>
-
-              <div className="flex gap-3">
-                {!playing ? (
-                  <button
-                    onClick={handlePlay}
-                    className="px-6 py-2 rounded-lg bg-green-600 hover:bg-green-500 font-medium"
-                  >
-                    ▶ Play
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleStop}
-                    className="px-6 py-2 rounded-lg bg-red-600 hover:bg-red-500 font-medium"
-                  >
-                    ⏹ Stop
-                  </button>
-                )}
-              </div>
             </div>
 
-            {/* ---------- 4. Record ---------- */}
-            <div className="mt-8 border-t border-neutral-700 pt-6">
-              <h2 className="text-xl font-semibold mb-2">4. Record</h2>
-              <p className="text-sm text-yellow-400 mb-4">
-                🎧 Headphones පළඳින්න! (නැත්නම් backing track එක mic එකට ඇතුල් වේ)
-              </p>
-
-              <div className="flex flex-wrap gap-3 mb-4">
-                {!recording ? (
-                  <button
-                    onClick={handleRecord}
-                    className="px-6 py-2 rounded-lg bg-red-600 hover:bg-red-500 font-medium"
-                  >
-                    🔴 Record
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleStopRecord}
-                    className="px-6 py-2 rounded-lg bg-neutral-600 hover:bg-neutral-500 font-medium animate-pulse"
-                  >
-                    ⏹ Stop Recording
-                  </button>
-                )}
-              </div>
-
-              {micError && <p className="text-red-400 mb-3">⚠️ {micError}</p>}
-
-              {vocalUrl && (
-                <div>
-                  <p className="text-sm text-neutral-300 mb-2">ඔබේ record එක:</p>
-                  <audio controls src={vocalUrl} className="w-full" />
-                  <a
-                    href={vocalUrl}
-                    download="my-vocals.webm"
-                    className="inline-block mt-3 text-indigo-400 hover:text-indigo-300 underline"
-                  >
-                    ⬇ Vocals download කරන්න
-                  </a>
-                </div>
-              )}
-            </div>
-
-            {/* ---------- 5. Mix & Export ---------- */}
-            {vocalBlob && (
-              <div className="mt-8 border-t border-neutral-700 pt-6">
-                <h2 className="text-xl font-semibold mb-4">5. Mix & Export</h2>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-                  <div className="bg-neutral-800 rounded-lg p-4">
-                    <div className="text-sm text-neutral-400 mb-2">
-                      🎤 Vocal volume: {vocalVolume.toFixed(1)}
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={2}
-                      step={0.1}
-                      value={vocalVolume}
-                      onChange={(e) => setVocalVolume(Number(e.target.value))}
-                      className="w-full"
-                    />
-                  </div>
-                  <div className="bg-neutral-800 rounded-lg p-4">
-                    <div className="text-sm text-neutral-400 mb-2">
-                      🎸 Music volume: {musicVolume} dB
-                    </div>
-                    <input
-                      type="range"
-                      min={-24}
-                      max={0}
-                      step={1}
-                      value={musicVolume}
-                      onChange={(e) => setMusicVolume(Number(e.target.value))}
-                      className="w-full"
-                    />
-                  </div>
-                  <div className="bg-neutral-800 rounded-lg p-4">
-                    <div className="text-sm text-neutral-400 mb-2">
-                      ⏲ Vocal sync: {offsetMs} ms
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={500}
-                      step={10}
-                      value={offsetMs}
-                      onChange={(e) => setOffsetMs(Number(e.target.value))}
-                      className="w-full"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleMix}
-                  disabled={mixing}
-                  className="px-6 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-700 font-medium"
-                >
-                  {mixing ? "Mix කරමින්..." : "🎚 Mix කරන්න"}
+            {/* Tempo */}
+            <div>
+              <div className="text-sm text-neutral-400 mb-1">වේගය: {p.tempo} BPM</div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => set({ tempo: Math.max(50, p.tempo - 10) })} className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm">
+                  🐢
                 </button>
+                <input
+                  type="range"
+                  min={50}
+                  max={200}
+                  value={p.tempo}
+                  onChange={(e) => set({ tempo: Number(e.target.value) })}
+                  className="flex-1"
+                />
+                <button onClick={() => set({ tempo: Math.min(200, p.tempo + 10) })} className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm">
+                  🐇
+                </button>
+              </div>
+            </div>
 
-                {mixError && <p className="mt-3 text-red-400">⚠️ {mixError}</p>}
+            {/* Bars */}
+            <div>
+              <div className="text-sm text-neutral-400 mb-1">දිග (bars)</div>
+              <div className="flex gap-2">
+                {[4, 8, 16].map((b) => (
+                  <button
+                    key={b}
+                    onClick={() => setP(resizeProject(p, b))}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm ${p.bars === b ? "bg-indigo-600 border-white" : "bg-neutral-800 border-neutral-600 hover:bg-neutral-700"
+                      }`}
+                  >
+                    {b}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
 
-                {mixUrl && (
-                  <div className="mt-4">
-                    <p className="text-sm text-neutral-300 mb-2">අවසන් cover එක:</p>
-                    <audio controls src={mixUrl} className="w-full" />
-                    <a
-                      href={mixUrl}
-                      download="my-cover.wav"
-                      className="inline-block mt-3 px-5 py-2 rounded-lg bg-green-600 hover:bg-green-500 font-medium"
-                    >
-                      ⬇ Download (WAV)
-                    </a>
+        {/* ================= 2. CHORDS ================= */}
+        <section className="bg-neutral-900 rounded-xl p-5">
+          <h2 className="text-lg font-semibold mb-1">2. Chords (පසුබිම් සංගීතය)</h2>
+          <p className="text-sm text-neutral-400 mb-3">
+            සරලම ක්‍රමය: පහළ ඇති ක්‍රමයක් එබුවාම chords හැදෙනවා. ඊට පස්සේ bar එකක් බැගින් වෙනස් කරන්න.
+          </p>
+
+          <div className="flex flex-wrap gap-2 mb-4">
+            {PROGRESSIONS.map((pr) => (
+              <button
+                key={pr.name}
+                onClick={() => set({ chords: applyProgression(pr.degrees, p.bars) })}
+                className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 text-sm"
+              >
+                {pr.name}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {p.chords.map((d, i) => (
+              <div
+                key={i}
+                className={`rounded-lg border p-2 ${headBar === i ? "border-orange-400 bg-orange-500/20" : "border-neutral-700 bg-neutral-800"
+                  }`}
+              >
+                <div className="text-xs text-neutral-400 mb-1">Bar {i + 1}</div>
+                <select
+                  value={d}
+                  onChange={(e) => {
+                    const c = [...p.chords];
+                    c[i] = Number(e.target.value);
+                    set({ chords: c });
+                  }}
+                  className="bg-neutral-700 rounded px-2 py-1 w-full font-bold"
+                >
+                  {[0, 1, 2, 3, 4, 5, 6].map((deg) => (
+                    <option key={deg} value={deg}>
+                      {chordLabel(p.mode, p.keyRoot, deg)}
+                    </option>
+                  ))}
+                  <option value={-1}>— (නැහැ)</option>
+                </select>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ================= 3. MELODY ================= */}
+        <section className="bg-neutral-900 rounded-xl p-5">
+          <h2 className="text-lg font-semibold mb-1">3. 🎤 තනුව (ඔබේ සිංදුවේ තනුව දාන්න)</h2>
+          <p className="text-sm text-neutral-400 mb-3">
+            කොටුවක් click කරන්න → ඒ ස්වරය ඇහෙනවා. ඉහළ කොටු = උස ස්වර. එකම පේළියේ කොටු ගණනාවක් එක දිගට
+            click කළොත් දිගු ස්වරයක් වෙනවා. ලා පාට කොටු = ඒ bar එකේ chord එකට ගැලපෙන ස්වර.
+          </p>
+
+          <div className="flex flex-wrap gap-2 mb-3">
+            <button
+              onClick={() => set({ melody: randomMelody(p) })}
+              className="px-4 py-2 rounded-lg bg-pink-600 hover:bg-pink-500 text-sm font-medium"
+            >
+              🎲 Random අදහසක් (chords වලට ගැලපෙන)
+            </button>
+            <button
+              onClick={() => set({ melody: Array(totalCols).fill(-1) })}
+              className="px-4 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 text-sm"
+            >
+              🗑 සියල්ල මකන්න
+            </button>
+          </div>
+
+          <div className="overflow-x-auto pb-2">
+            <div className="inline-block">
+              {Array.from({ length: MELODY_ROWS }, (_, i) => MELODY_ROWS - 1 - i).map((row) => (
+                <div key={row} className="flex items-center">
+                  <div
+                    className={`w-10 text-xs text-right pr-2 sticky left-0 bg-neutral-900 ${row % 7 === 0 ? "text-pink-400 font-bold" : "text-neutral-500"
+                      }`}
+                  >
+                    {rowLabel(p, row)}
                   </div>
-                )}
+                  {Array.from({ length: totalCols }, (_, col) => {
+                    const on = p.melody[col] === row;
+                    const bar = Math.floor(col / STEPS);
+                    const d = p.chords[bar];
+                    const rel = d < 0 ? -1 : (((row - d) % 7) + 7) % 7;
+                    const hint = rel === 0 || rel === 2 || rel === 4;
+                    return (
+                      <button
+                        key={col}
+                        onClick={() => clickCell(col, row)}
+                        className={`w-7 h-6 border-b border-neutral-900 ${col % STEPS === 0 ? "border-l-2 border-l-neutral-600" : "border-l border-l-neutral-900"
+                          } ${on
+                            ? "bg-pink-500"
+                            : headCol === col
+                              ? "bg-orange-500/40"
+                              : hint
+                                ? "bg-neutral-700 hover:bg-neutral-600"
+                                : "bg-neutral-800 hover:bg-neutral-700"
+                          }`}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* ================= 4. DRUMS ================= */}
+        <section className="bg-neutral-900 rounded-xl p-5">
+          <h2 className="text-lg font-semibold mb-3">4. 🥁 Drums (රිද්මය)</h2>
+
+          <div className="flex flex-wrap gap-2 mb-4">
+            {DRUM_PRESETS.map((d) => (
+              <button
+                key={d.name}
+                onClick={() => set({ drums: d.drums })}
+                className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 text-sm"
+              >
+                {d.name}
+              </button>
+            ))}
+          </div>
+
+          <div className="overflow-x-auto">
+            {(
+              [
+                ["kick", "Kick (බූ)"],
+                ["snare", "Snare (ටැක්)"],
+                ["hat", "Hi-hat (ටික්)"],
+              ] as [keyof Drums, string][]
+            ).map(([row, label]) => (
+              <div key={row} className="flex items-center mb-1">
+                <div className="w-28 text-sm text-neutral-300">{label}</div>
+                {p.drums[row].map((on, s) => (
+                  <button
+                    key={s}
+                    onClick={() => toggleDrum(row, s)}
+                    className={`w-8 h-8 mr-1 rounded ${s % 4 === 0 ? "ml-1" : ""} ${on ? "bg-orange-500" : headDrum === s ? "bg-orange-500/40" : "bg-neutral-800 hover:bg-neutral-700"
+                      }`}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ================= 5. MIXER ================= */}
+        <section className="bg-neutral-900 rounded-xl p-5">
+          <h2 className="text-lg font-semibold mb-3">5. Instruments සහ ශබ්ද මට්ටම</h2>
+          <div className="space-y-3">
+            {(Object.keys(TRACK_INFO) as TrackId[]).map((id) => {
+              const info = TRACK_INFO[id];
+              const t = p.tracks[id];
+              return (
+                <div
+                  key={id}
+                  className={`rounded-xl border p-3 flex flex-wrap items-center gap-3 ${info.color} ${t.muted ? "opacity-50" : ""}`}
+                >
+                  <div className="w-24 font-semibold">
+                    {info.icon} {info.name}
+                  </div>
+
+                  {INSTRUMENTS[id].length > 0 && (
+                    <select
+                      value={t.instrument}
+                      onChange={(e) => setTrack(id, { instrument: e.target.value })}
+                      className="bg-neutral-800 rounded-lg px-3 py-2 text-sm"
+                    >
+                      {INSTRUMENTS[id].map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {i.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  {STYLES[id].length > 0 && (
+                    <select
+                      value={t.style}
+                      onChange={(e) => setTrack(id, { style: e.target.value })}
+                      className="bg-neutral-800 rounded-lg px-3 py-2 text-sm"
+                    >
+                      {STYLES[id].map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  <div className="flex items-center gap-2 flex-1 min-w-[140px]">
+                    <span>🔊</span>
+                    <input
+                      type="range"
+                      min={-30}
+                      max={0}
+                      value={t.volume}
+                      onChange={(e) => setTrack(id, { volume: Number(e.target.value) })}
+                      className="w-full"
+                    />
+                  </div>
+
+                  <button
+                    onClick={() => setTrack(id, { muted: !t.muted })}
+                    className={`px-3 py-2 rounded-lg text-sm ${t.muted ? "bg-yellow-600" : "bg-neutral-800 hover:bg-neutral-700"}`}
+                  >
+                    {t.muted ? "🔈 Unmute" : "🔇 Mute"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ================= 6. RECORD ================= */}
+        <section className="bg-neutral-900 rounded-xl p-5">
+          <h2 className="text-lg font-semibold mb-2">6. 🎤 ඔබේ ගායනය Record කරන්න</h2>
+          <p className="text-sm text-yellow-400 mb-3">
+            🎧 Headphones පළඳින්න! Record ඔබද්දී music එක නැවත නැවත වාදනය වෙනවා. ගායනය ඉවර වුණාම Stop කරන්න.
+          </p>
+
+          {!recording ? (
+            <button onClick={handleRecord} className="px-6 py-2 rounded-lg bg-red-600 hover:bg-red-500 font-medium">
+              🔴 Record
+            </button>
+          ) : (
+            <button onClick={handleStopRecord} className="px-6 py-2 rounded-lg bg-neutral-600 hover:bg-neutral-500 font-medium animate-pulse">
+              ⏹ Stop Recording
+            </button>
+          )}
+          {micError && <p className="mt-3 text-red-400">⚠️ {micError}</p>}
+
+          {vocalUrl && (
+            <div className="mt-4">
+              <p className="text-sm text-neutral-300 mb-2">ඔබේ record එක:</p>
+              <audio controls src={vocalUrl} className="w-full" />
+            </div>
+          )}
+        </section>
+
+        {/* ================= 7. MIX ================= */}
+        {vocalBlob && (
+          <section className="bg-neutral-900 rounded-xl p-5">
+            <h2 className="text-lg font-semibold mb-3">7. 🎚 Mix කරලා Download කරන්න</h2>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+              <div className="bg-neutral-800 rounded-lg p-4">
+                <div className="text-sm text-neutral-400 mb-2">🎤 ඔබේ හඬේ ශබ්දය: {vocalVol.toFixed(1)}</div>
+                <input type="range" min={0} max={2} step={0.1} value={vocalVol} onChange={(e) => setVocalVol(Number(e.target.value))} className="w-full" />
+              </div>
+              <div className="bg-neutral-800 rounded-lg p-4">
+                <div className="text-sm text-neutral-400 mb-2">⏲ හඬ music එකට පස්සෙන් නම්, මේක වැඩි කරන්න: {trimMs} ms</div>
+                <input type="range" min={0} max={500} step={10} value={trimMs} onChange={(e) => setTrimMs(Number(e.target.value))} className="w-full" />
+                <div className="text-xs text-neutral-500 mt-1">(Bluetooth headphones නම් 150-300 අවශ්‍ය වෙයි)</div>
+              </div>
+            </div>
+
+            <button
+              onClick={handleMix}
+              disabled={mixing}
+              className="px-6 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-700 font-medium"
+            >
+              {mixing ? "Mix කරමින්..." : "🎚 Mix කරන්න"}
+            </button>
+            {mixError && <p className="mt-3 text-red-400">⚠️ {mixError}</p>}
+
+            {mixUrl && (
+              <div className="mt-4">
+                <p className="text-sm text-neutral-300 mb-2">අවසන් cover එක:</p>
+                <audio controls src={mixUrl} className="w-full" />
+                <a href={mixUrl} download="my-cover.wav" className="inline-block mt-3 px-5 py-2 rounded-lg bg-green-600 hover:bg-green-500 font-medium">
+                  ⬇ Download (WAV)
+                </a>
+                <p className="text-xs text-neutral-500 mt-3">
+                  ⚖️ මෙහි ඇත්තේ ඔබ හදපු අලුත් music එකයි, මුල් recording එකක් නැහැ. ඒත් තනුව/පද කවරේ
+                  අයිතිය තවමත් මුල් ගීත රචකයාට අයිතියි. social media එකට දාන්න කලින් ඒ platform එකේ cover
+                  license නීති බලන්න.
+                </p>
               </div>
             )}
           </section>
