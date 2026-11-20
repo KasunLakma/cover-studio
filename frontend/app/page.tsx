@@ -29,6 +29,7 @@ import {
   type TrackSettings,
 } from "@/lib/engine";
 import { startRecording, stopRecording } from "@/lib/recorder";
+import ReferencePlayer from "@/components/ReferencePlayer";
 
 const TRACK_INFO: Record<TrackId, { icon: string; name: string; color: string }> = {
   melody: { icon: "🎤", name: "තනුව", color: "border-pink-500 bg-pink-500/10" },
@@ -157,6 +158,12 @@ export default function Home() {
           </p>
         </header>
 
+        <ReferencePlayer
+          onTempo={(bpm) => set({ tempo: bpm })}
+          onBeforePlay={() => {
+            if (playing) handleStop();
+          }}
+        />
         {/* ================= PLAY BAR ================= */}
         <section className="bg-neutral-900 rounded-xl p-5 sticky top-0 z-20 border border-neutral-800">
           <div className="flex flex-wrap items-center gap-4">
